@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
+from agentic_workflow import AgentWorkflow  # Ensure this is your workflow module
 
 # ---------------------------
 # Load environment variables
@@ -23,11 +24,9 @@ engine = create_engine(DATABASE_URL, echo=False, future=True)
 app = FastAPI()
 
 # ---------------------------
-# Import your agent workflow
+# Initialize agent workflow
 # ---------------------------
-from agentic_workflow import AgentWorkflow  # Ensure this is your workflow module
 workflow = AgentWorkflow()
-
 
 # ---------------------------
 # Create employees table if not exists
@@ -48,7 +47,6 @@ def create_table():
 
 create_table()
 
-
 # ---------------------------
 # Routes
 # ---------------------------
@@ -60,16 +58,15 @@ async def home():
 @app.post("/ingest")
 async def ingest_chatlio(request: Request):
     try:
-        # Get payload
         payload = await request.json()
         print("✅ Received Chatlio data:")
         print(json.dumps(payload, indent=2))
 
-        # Run your agentic workflow
+        # Run agent workflow
         results = await workflow.execute_workflow(payload)
 
-        # Insert each employee record into the database
-        with engine.begin() as conn:
+        # Insert records into DB
+        with engine.connect() as conn:
             for record in payload:
                 name = record.get('Employee Name') or record.get('employee') or record.get('name')
                 date = record.get('Date') or record.get('date')
@@ -86,13 +83,18 @@ async def ingest_chatlio(request: Request):
                 )
             conn.commit()
 
-        return {"status": "success", "received": True, "workflow_result": results}
+        # Zapier-ready response
+        return {
+            "status": "success",
+            "received": True,
+            "workflow_result": results,
+            "current": results  # <-- Zapier expects this field
+        }
 
     except SQLAlchemyError as db_err:
         print("❌ Database error:", str(db_err))
-        return {"status": "error", "message": f"Database error: {str(db_err)}"}
+        return {"status": "error", "message": f"Database error: {str(db_err)}", "current": None}
 
     except Exception as e:
         print("❌ Error processing request:", str(e))
-        return {"status": "error", "message": str(e)}
-
+        return {"status": "error", "message": str(e), "current": None}
