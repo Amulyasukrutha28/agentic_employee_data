@@ -69,7 +69,7 @@ async def ingest_chatlio(request: Request):
         results = await workflow.execute_workflow(payload)
 
         # Insert each employee record into the database
-        with engine.connect() as conn:
+        with engine.begin() as conn:
             for record in payload:
                 name = record.get('Employee Name') or record.get('employee') or record.get('name')
                 date = record.get('Date') or record.get('date')
@@ -95,3 +95,4 @@ async def ingest_chatlio(request: Request):
     except Exception as e:
         print("❌ Error processing request:", str(e))
         return {"status": "error", "message": str(e)}
+
