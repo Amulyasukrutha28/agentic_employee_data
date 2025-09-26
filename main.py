@@ -2,7 +2,12 @@ from fastapi import FastAPI, Request
 import json
 import asyncio
 
+from your_workflow_module import AgentWorkflow  # Make sure to import your workflow class
+
 app = FastAPI()
+
+# Initialize the agentic workflow
+workflow = AgentWorkflow()
 
 @app.get("/")
 async def home():
@@ -12,11 +17,14 @@ async def home():
 async def ingest_chatlio(request: Request):
     try:
         payload = await request.json()
+        results = await workflow.execute_workflow(payload)
+        
         print("✅ Received Chatlio data:")
         print(json.dumps(payload, indent=2))
 
-        # Example: Here you can call your agent workflow asynchronously
-        # asyncio.create_task(run_agentic_workflow(payload))
+        # Save results for dashboard or further analysis
+        with open('analysis_results.json', 'w') as f:
+            json.dump(results, f, indent=2, default=str)
 
         return {"status": "success", "received": True}
 
