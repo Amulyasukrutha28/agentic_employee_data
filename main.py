@@ -1,15 +1,25 @@
 from fastapi import FastAPI, Request
-import asyncio
 import json
+import asyncio
 
 app = FastAPI()
 
+@app.get("/")
+async def home():
+    return {"message": "FastAPI server is running!"}
+
 @app.post("/ingest")
 async def ingest_chatlio(request: Request):
-    payload = await request.json()
-    print("Received Chatlio data:", json.dumps(payload, indent=2))
-    
-    # Here you can call your agentic workflow
-    # asyncio.create_task(run_agentic_workflow(payload))
+    try:
+        payload = await request.json()
+        print("✅ Received Chatlio data:")
+        print(json.dumps(payload, indent=2))
 
-    return {"status": "success"}
+        # Example: Here you can call your agent workflow asynchronously
+        # asyncio.create_task(run_agentic_workflow(payload))
+
+        return {"status": "success", "received": True}
+
+    except Exception as e:
+        print("❌ Error processing request:", str(e))
+        return {"status": "error", "message": str(e)}
