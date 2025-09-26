@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 import json
 import asyncio
 
-from your_workflow_module import AgentWorkflow  # Make sure to import your workflow class
+from agents import AgentWorkflow  # Make sure to import your workflow class
 
 app = FastAPI()
 
@@ -31,3 +31,4 @@ async def ingest_chatlio(request: Request):
     except Exception as e:
         print("❌ Error processing request:", str(e))
         return {"status": "error", "message": str(e)}
+
