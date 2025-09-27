@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
-from agentic_workflow import AgentWorkflow  # Ensure this is your workflow module
+from agents import AgentWorkflow  # Ensure this is your workflow module
 
 # ---------------------------
 # Load environment variables
@@ -98,3 +98,4 @@ async def ingest_chatlio(request: Request):
     except Exception as e:
         print("❌ Error processing request:", str(e))
         return {"status": "error", "message": str(e), "current": None}
+
