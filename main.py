@@ -51,7 +51,6 @@ create_table()
 async def home():
     return {"message": "FastAPI server is running!"}
 
-
 @app.post("/ingest")
 async def ingest_chatlio(request: Request):
     try:
@@ -59,29 +58,34 @@ async def ingest_chatlio(request: Request):
         print("✅ Received Zapier data:")
         print(json.dumps(payload, indent=2))
 
-        # Map Slack/Zapier payload → employee fields
-        name = payload.get("User Real Name") or payload.get("user", {}).get("name")
-        text_status = payload.get("Text", "").lower()  # "logged in" / "logged out"
-        timestamp = payload.get("Ts Time")
+        # Extract employee details from Slack/Zapier payload
+        user_data = payload.get("user", {})
+        name = (
+            user_data.get("real_name")
+            or user_data.get("name")
+            or user_data.get("profile", {}).get("first_name")
+        )
 
-        # Convert timestamp to date & time
-        date_val = None
-        time_val = None
+        text_status = (payload.get("text") or payload.get("raw_text") or "").lower()
+        timestamp = payload.get("ts_time")
+
+        date_val, time_val = None, None
         if timestamp:
             try:
                 dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                 date_val = dt.date()
                 time_val = dt.strftime("%H:%M")
-            except Exception:
-                pass
+            except Exception as e:
+                print("⚠️ Timestamp parse error:", str(e))
 
+        # Determine login/logout event
         login_time = time_val if "in" in text_status else None
         logout_time = time_val if "out" in text_status else None
 
         # Run AI workflow
         results = await workflow.execute_workflow(payload)
 
-        # Insert into DB
+        # Save to DB
         with engine.connect() as conn:
             conn.execute(
                 text("""
@@ -93,7 +97,7 @@ async def ingest_chatlio(request: Request):
                     "date": date_val,
                     "login": login_time,
                     "logout": logout_time,
-                    "hours": None  # can be computed later
+                    "hours": None  # will be computed later
                 }
             )
             conn.commit()
@@ -103,7 +107,7 @@ async def ingest_chatlio(request: Request):
             "received": True,
             "mapped_employee": {
                 "name": name,
-                "date": str(date_val),
+                "date": str(date_val) if date_val else None,
                 "login_time": login_time,
                 "logout_time": logout_time
             },
@@ -118,3 +122,5 @@ async def ingest_chatlio(request: Request):
     except Exception as e:
         print("❌ Error processing request:", str(e))
         return {"status": "error", "message": str(e), "current": None}
+
+@
