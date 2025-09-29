@@ -2,13 +2,14 @@ import os
 import asyncio
 import json
 from typing import List, Dict, Any
+from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
 import openai
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Set your OpenAI API key
+# Set OpenAI API key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
@@ -35,9 +36,23 @@ class DataIngestionAgent:
         if not records:
             raise ValueError("No data retrieved from database")
 
-        schema = {'fields': list(records[0].keys()) if records else [], 'record_count': len(records)}
-        return {'status': 'completed', 'schema': schema, 'processed_records': len(records), 'data': records}
+        # Auto-compute working hours if login/logout exist
+        for rec in records:
+            try:
+                login = rec.get("login_time")
+                logout = rec.get("logout_time")
+                if login and logout:
+                    fmt = "%H:%M"
+                    t_in = datetime.strptime(login, fmt)
+                    t_out = datetime.strptime(logout, fmt)
+                    rec["Working hours"] = round((t_out - t_in).total_seconds()/3600, 2)
+                else:
+                    rec["Working hours"] = 0
+            except:
+                rec["Working hours"] = 0
 
+        schema = {'fields': list(records[0].keys()), 'record_count': len(records)}
+        return {'status': 'completed', 'schema': schema, 'processed_records': len(records), 'data': records}
 
 class AnalysisAgent:
     async def process(self, data: List[Dict]) -> Dict[str, Any]:
@@ -67,7 +82,6 @@ class AnalysisAgent:
             'timing_records': timing_records
         }
 
-
 class ReasoningAgent:
     async def process(self, data: List[Dict], analysis_result: Dict) -> Dict[str, Any]:
         prompt = f"""
@@ -91,7 +105,6 @@ class ReasoningAgent:
 
         return {'status': 'completed', 'llm_analysis': llm_analysis}
 
-
 class InsightsAgent:
     async def process(self, data: List[Dict], analysis_result: Dict, reasoning_result: Dict) -> Dict[str, Any]:
         under_performers = [r for r in analysis_result['timing_records'] if r['working_hours'] < 9]
@@ -102,9 +115,9 @@ class InsightsAgent:
             'llm_insights': reasoning_result['llm_analysis']
         }
 
-
 # -------------------- Visualization --------------------
 def create_visualizations(analysis_result: Dict, insights_result: Dict):
+    date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     hours = [r['working_hours'] for r in analysis_result['timing_records']]
     compliant = sum([1 for r in analysis_result['timing_records'] if r['compliant']])
     non_compliant = len(hours) - compliant
@@ -115,14 +128,14 @@ def create_visualizations(analysis_result: Dict, insights_result: Dict):
     plt.title("Distribution of Working Hours")
     plt.xlabel("Hours")
     plt.ylabel("Number of Employees")
-    plt.savefig("working_hours_distribution.png")
+    plt.savefig(f"working_hours_{date_str}.png")
     plt.close()
 
     # Pie chart: compliance
     plt.figure(figsize=(6,6))
     plt.pie([compliant, non_compliant], labels=["Compliant","Non-Compliant"], autopct='%1.1f%%', colors=['green','red'])
     plt.title("Compliance Rate")
-    plt.savefig("compliance_pie.png")
+    plt.savefig(f"compliance_pie_{date_str}.png")
     plt.close()
 
     # Bar chart: top under-performers
@@ -135,9 +148,8 @@ def create_visualizations(analysis_result: Dict, insights_result: Dict):
         plt.xlabel("Employee")
         plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.savefig("top_underperformers.png")
+        plt.savefig(f"top_underperformers_{date_str}.png")
         plt.close()
-
 
 # -------------------- Agent Workflow --------------------
 class AgentWorkflow:
@@ -148,7 +160,7 @@ class AgentWorkflow:
         self.reasoning_agent = ReasoningAgent()
         self.insights_agent = InsightsAgent()
 
-    async def run(self):
+    async def execute_workflow(self):
         # Step 1: Fetch data
         ingestion_result = await self.data_agent.process()
         data = ingestion_result['data']
@@ -166,38 +178,17 @@ class AgentWorkflow:
         create_visualizations(analysis_result, insights_result)
 
         # Step 6: Save combined results
+        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        final_results_file = f"employee_analysis_results_{date_str}.json"
         final_results = {
             "ingestion": ingestion_result,
             "analysis": analysis_result,
             "reasoning": reasoning_result,
             "insights": insights_result
         }
-        with open("employee_analysis_results.json", "w") as f:
+        with open(final_results_file, "w") as f:
             json.dump(final_results, f, indent=2)
 
         print("✅ Analysis Complete")
-        print("💾 Results saved to 'employee_analysis_results.json'")
-        print("📊 Visualizations saved as PNG files")
+        print(f"💾 Results saved to '{final_results_file}'")
         return final_results
-
-
-# -------------------- Main --------------------
-async def main():
-    print("🚀 Starting Employee Timing Analysis Workflow\n")
-    workflow = AgentWorkflow()
-    results = await workflow.run()
-
-    # Optional: print summary
-    analysis = results['analysis']
-    insights = results['insights']
-    print(f"\nTotal Records: {analysis['total_records']}")
-    print(f"Average Working Hours: {analysis['avg_working_hours']:.2f}")
-    print(f"Overtime Cases: {analysis['overtime_count']}")
-    print(f"Undertime Cases: {analysis['undertime_count']}")
-    print(f"Compliance Rate: {insights['compliance_rate']}%")
-    print("\nLLM Insights:\n", insights['llm_insights'])
-
-
-# Run
-if __name__ == "__main__":
-    asyncio.run(main())
