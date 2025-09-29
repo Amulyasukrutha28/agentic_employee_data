@@ -1,14 +1,19 @@
+import os
+import asyncio
+import json
+from typing import List, Dict, Any
+import matplotlib.pyplot as plt
+import seaborn as sns
 import openai
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Set your OpenAI API key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-proj-...")
 openai.api_key = OPENAI_API_KEY
 
+# -------------------- Agents --------------------
 class DataIngestionAgent:
-    """Agent responsible for fetching employee timing data from PostgreSQL"""
-
     async def process(self, data: List[Dict] = None) -> Dict[str, Any]:
         """Fetch data from PostgreSQL database"""
         try:
@@ -21,7 +26,7 @@ class DataIngestionAgent:
                 cursor_factory=RealDictCursor
             )
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM employee_timing;")  # Replace with your table name
+            cursor.execute("SELECT * FROM employee_timing;")
             records = cursor.fetchall()
             conn.close()
         except Exception as e:
@@ -30,215 +35,145 @@ class DataIngestionAgent:
         if not records:
             raise ValueError("No data retrieved from database")
 
-        schema = {
-            'fields': list(records[0].keys()) if records else [],
-            'record_count': len(records)
-        }
+        schema = {'fields': list(records[0].keys()) if records else [], 'record_count': len(records)}
+        return {'status': 'completed', 'schema': schema, 'processed_records': len(records), 'data': records}
+
+class AnalysisAgent:
+    async def process(self, data: List[Dict]) -> Dict[str, Any]:
+        working_hours = []
+        timing_records = []
+
+        for record in data:
+            hours = float(record.get('Working hours', 0))
+            working_hours.append(hours)
+            timing_records.append({
+                'name': record.get('Employee Name', 'Unknown'),
+                'date': record.get('Date', 'Unknown'),
+                'working_hours': hours,
+                'compliant': hours >= 9
+            })
+
+        avg_hours = sum(working_hours)/len(working_hours)
+        overtime = len([h for h in working_hours if h > 8])
+        undertime = len([h for h in working_hours if h < 8])
 
         return {
-            'status': 'completed',
-            'schema': schema,
-            'processed_records': len(records),
-            'data': records
+            'total_records': len(data),
+            'avg_working_hours': avg_hours,
+            'overtime_count': overtime,
+            'undertime_count': undertime,
+            'timing_records': timing_records
         }
+
 class ReasoningAgent:
-    """Agent for pattern analysis and reasoning using OpenAI GPT"""
-
     async def process(self, data: List[Dict], analysis_result: Dict) -> Dict[str, Any]:
-        """Analyze patterns and generate insights via OpenAI GPT"""
-        data_summary = {
-            'total_employees': analysis_result['total_records'],
-            'average_working_hours': analysis_result['avg_working_hours'],
-            'overtime_cases': analysis_result['overtime_count'],
-            'undertime_cases': analysis_result['undertime_count'],
-            'attendance_rate': analysis_result['attendance_rate']
-        }
-
         prompt = f"""
-        You are an HR data analyst. Analyze this employee timing data:
-
-        Data Summary:
-        - Total employee records: {data_summary['total_employees']}
-        - Average working hours: {data_summary['average_working_hours']:.2f}
-        - Overtime cases: {data_summary['overtime_cases']}
-        - Undertime cases: {data_summary['undertime_cases']}
-        - Overall attendance rate: {data_summary['attendance_rate']:.1f}%
-
-        Identify:
-        1. Key patterns in the data
-        2. Productivity or scheduling issues
-        3. Workforce trends and anomalies
-        4. Risk factors for management
+        Analyze the following employee timing data:
+        Total employees: {analysis_result['total_records']}
+        Avg working hours: {analysis_result['avg_working_hours']:.2f}
+        Overtime cases: {analysis_result['overtime_count']}
+        Undertime cases: {analysis_result['undertime_count']}
         """
-
         try:
             response = openai.ChatCompletion.create(
                 model="gpt-4o-mini",
-                messages=[{"role": "system", "content": "You are an expert HR analyst."},
+                messages=[{"role": "system", "content": "You are an HR analyst."},
                           {"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=500
+                max_tokens=300
             )
-
             llm_analysis = response.choices[0].message.content
-
-            patterns = []
-            risks = []
-            text_lower = llm_analysis.lower()
-            if 'overtime' in text_lower:
-                patterns.append('Overtime patterns detected')
-            if 'undertime' in text_lower:
-                patterns.append('Underutilization patterns identified')
-            if 'burnout' in text_lower or 'overwork' in text_lower:
-                risks.append('Employee burnout risk')
-            if 'compliance' in text_lower:
-                risks.append('Compliance risk')
-
-            return {
-                'status': 'completed',
-                'llm_analysis': llm_analysis,
-                'patterns_identified': patterns,
-                'risk_factors': risks
-            }
-
         except Exception as e:
-            return {
-                'status': 'failed',
-                'llm_analysis': f'OpenAI API error: {e}',
-                'patterns_identified': [],
-                'risk_factors': []
-            }
+            llm_analysis = f"OpenAI error: {e}"
+
+        return {'status': 'completed', 'llm_analysis': llm_analysis}
+
 class InsightsAgent:
-    """Agent for compliance insights using OpenAI GPT"""
-
     async def process(self, data: List[Dict], analysis_result: Dict, reasoning_result: Dict) -> Dict[str, Any]:
-        under_performers = [
-            {
-                'name': r['name'],
-                'date': r['date'],
-                'login_time': r['login_time'],
-                'logout_time': r['logout_time'],
-                'working_hours': r['working_hours'],
-                'deficit': round(9 - r['working_hours'], 2)
-            }
-            for r in analysis_result['timing_records'] if r['working_hours'] < 9
-        ]
+        under_performers = [r for r in analysis_result['timing_records'] if r['working_hours'] < 9]
+        compliance_rate = round(len([r for r in analysis_result['timing_records'] if r['compliant']])/len(data)*100,1)
+        return {'under_performers': under_performers, 'compliance_rate': compliance_rate, 'llm_insights': reasoning_result['llm_analysis']}
 
-        prompt = f"""
-        You are an HR compliance specialist. Analyze the following under-performers:
+# -------------------- Visualization --------------------
+def create_visualizations(analysis_result: Dict, insights_result: Dict):
+    hours = [r['working_hours'] for r in analysis_result['timing_records']]
+    compliant = sum([1 for r in analysis_result['timing_records'] if r['compliant']])
+    non_compliant = len(hours) - compliant
 
-        Under-Performers Count: {len(under_performers)}
-        Average Working Hours: {analysis_result['avg_working_hours']:.2f}
-        Previous Analysis: {reasoning_result.get('llm_analysis', '')}
+    # Histogram of working hours
+    plt.figure(figsize=(8,5))
+    sns.histplot(hours, bins=10, kde=True, color='skyblue')
+    plt.title("Distribution of Working Hours")
+    plt.xlabel("Hours")
+    plt.ylabel("Number of Employees")
+    plt.savefig("working_hours_distribution.png")
+    plt.close()
 
-        Provide:
-        1. Specific compliance violations
-        2. Individual recommendations for under-performers
-        3. Systematic policy improvements
-        4. Risk mitigation strategies
-        """
+    # Pie chart: compliance
+    plt.figure(figsize=(6,6))
+    plt.pie([compliant, non_compliant], labels=["Compliant","Non-Compliant"], autopct='%1.1f%%', colors=['green','red'])
+    plt.title("Compliance Rate")
+    plt.savefig("compliance_pie.png")
+    plt.close()
 
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system", "content": "You are an HR compliance specialist."},
-                          {"role": "user", "content": prompt}],
-                temperature=0.2,
-                max_tokens=500
-            )
+    # Bar chart: top under-performers
+    under = sorted(insights_result['under_performers'], key=lambda x: x['deficit'], reverse=True)[:10]
+    if under:
+        plt.figure(figsize=(8,5))
+        sns.barplot(x=[u['name'] for u in under], y=[u['deficit'] for u in under], palette='Reds_r')
+        plt.title("Top 10 Under-Performers by Hours Deficit")
+        plt.ylabel("Hours Short")
+        plt.xlabel("Employee")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig("top_underperformers.png")
+        plt.close()
 
-            llm_insights = response.choices[0].message.content
-
-            recommendations = [
-                {
-                    'title': '⏰ Login/Logout Compliance',
-                    'description': f'Processed {len(analysis_result["timing_records"])} timing records',
-                    'priority': 'High',
-                    'action': 'Review individual patterns'
-                }
-            ]
-
-            return {
-                'status': 'completed',
-                'under_performers': under_performers,
-                'llm_insights': llm_insights,
-                'compliance_rate': round((len([r for r in analysis_result['timing_records'] if r['compliant']]) / len(analysis_result['timing_records'])) * 100, 1),
-                'recommendations': recommendations
-            }
-
-        except Exception as e:
-            return {
-                'status': 'failed',
-                'under_performers': under_performers,
-                'llm_insights': f'OpenAI API error: {e}',
-                'compliance_rate': 0,
-                'recommendations': []
-            }
-import asyncio
-from typing import List, Dict, Any
-
+# -------------------- Main Function --------------------
 async def main():
-    # Step 1: Fetch data from the database
-    ingestion_agent = DataIngestionAgent()
-    ingestion_result = await ingestion_agent.process()
-    records = ingestion_result['data']
-    print(f"Fetched {len(records)} records from the database.\n")
+    print("🚀 Starting Employee Timing Analysis with Visualization\n")
 
-    # Step 2: Basic analysis
-    timing_records = []
-    total_hours = 0
-    overtime_count = 0
-    undertime_count = 0
-    compliant_count = 0
-
-    for r in records:
-        working_hours = r['working_hours']
-        total_hours += working_hours
-        overtime_count += 1 if working_hours > 9 else 0
-        undertime_count += 1 if working_hours < 9 else 0
-        compliant = 9 <= working_hours <= 10  # Example compliance check
-        if compliant:
-            compliant_count += 1
-
-        timing_records.append({**r, 'compliant': compliant})
-
-    total_records = len(records)
-    avg_working_hours = total_hours / total_records
-    attendance_rate = (compliant_count / total_records) * 100
-
-    analysis_result = {
-        'timing_records': timing_records,
-        'total_records': total_records,
-        'avg_working_hours': avg_working_hours,
-        'overtime_count': overtime_count,
-        'undertime_count': undertime_count,
-        'attendance_rate': attendance_rate
-    }
-
-    print(f"Basic Analysis:\n - Average Working Hours: {avg_working_hours:.2f}\n - Overtime Cases: {overtime_count}\n - Undertime Cases: {undertime_count}\n - Compliance Rate: {attendance_rate:.1f}%\n")
-
-    # Step 3: Reasoning via GPT
+    data_agent = DataIngestionAgent()
+    analysis_agent = AnalysisAgent()
     reasoning_agent = ReasoningAgent()
-    reasoning_result = await reasoning_agent.process(records, analysis_result)
-    print(f"Reasoning Analysis:\n{reasoning_result.get('llm_analysis', '')}\nPatterns Detected: {reasoning_result.get('patterns_identified', [])}\nRisk Factors: {reasoning_result.get('risk_factors', [])}\n")
-
-    # Step 4: Compliance insights via GPT
     insights_agent = InsightsAgent()
-    insights_result = await insights_agent.process(records, analysis_result, reasoning_result)
-    print(f"Compliance Insights:\n{insights_result.get('llm_insights', '')}\n")
-    print(f"Recommendations:\n{insights_result.get('recommendations', [])}\n")
-        # Print under-performers
-    under_performers = insights_result.get('under_performers', [])
-    if under_performers:
-        print("Under-Performers:")
-        for up in under_performers:
-            print(f"- {up['name']} on {up['date']} worked {up['working_hours']} hrs (Deficit: {up['deficit']} hrs)")
-    else:
-        print("No under-performers detected.")
 
-# Run the main function using asyncio
+    # Fetch data
+    ingestion_result = await data_agent.process()
+    data = ingestion_result['data']
+
+    # Analysis
+    analysis_result = await analysis_agent.process(data)
+
+    # Reasoning
+    reasoning_result = await reasoning_agent.process(data, analysis_result)
+
+    # Insights
+    insights_result = await insights_agent.process(data, analysis_result, reasoning_result)
+
+    # Visualizations
+    create_visualizations(analysis_result, insights_result)
+
+    # Print summary
+    print(f"Total Records: {analysis_result['total_records']}")
+    print(f"Average Working Hours: {analysis_result['avg_working_hours']:.2f}")
+    print(f"Overtime Cases: {analysis_result['overtime_count']}")
+    print(f"Undertime Cases: {analysis_result['undertime_count']}")
+    print(f"Compliance Rate: {insights_result['compliance_rate']}%")
+    print("\nLLM Insights:\n", insights_result['llm_insights'])
+
+    # Save JSON
+    final_results = {
+        "ingestion": ingestion_result,
+        "analysis": analysis_result,
+        "reasoning": reasoning_result,
+        "insights": insights_result
+    }
+    with open("employee_analysis_results.json", "w") as f:
+        json.dump(final_results, f, indent=2)
+    print("\n💾 Results saved to 'employee_analysis_results.json'")
+    print("📊 Visualizations saved as PNG files")
+
+# Run
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
