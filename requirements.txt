@@ -5,4 +5,6 @@ pandas
 sqlalchemy
 psycopg2-binary
 aiofiles        # For async file handling in FastAPI
-httpx           # For async HTTP requests if your agents call APIs
+httpx    
+matplotlib
+seaborn
