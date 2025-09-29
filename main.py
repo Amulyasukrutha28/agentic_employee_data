@@ -1,35 +1,32 @@
 from fastapi import FastAPI, Request
 import json
-import asyncio
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
-from agents import AgentWorkflow  # Ensure this is your workflow module
+from agents import AgentWorkflow  # your workflow module
 
 # ---------------------------
-# Load environment variables
+# Load env
 # ---------------------------
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ---------------------------
-# Initialize database engine
+# DB setup
 # ---------------------------
 engine = create_engine(DATABASE_URL, echo=False, future=True)
 
 # ---------------------------
-# Initialize FastAPI
+# FastAPI
 # ---------------------------
 app = FastAPI()
 
-# ---------------------------
-# Initialize agent workflow
-# ---------------------------
 workflow = AgentWorkflow()
 
 # ---------------------------
-# Create employees table if not exists
+# Create employees table
 # ---------------------------
 def create_table():
     with engine.connect() as conn:
@@ -59,36 +56,59 @@ async def home():
 async def ingest_chatlio(request: Request):
     try:
         payload = await request.json()
-        print("✅ Received Chatlio data:")
+        print("✅ Received Zapier data:")
         print(json.dumps(payload, indent=2))
 
-        # Run agent workflow
+        # Map Slack/Zapier payload → employee fields
+        name = payload.get("User Real Name") or payload.get("user", {}).get("name")
+        text_status = payload.get("Text", "").lower()  # "logged in" / "logged out"
+        timestamp = payload.get("Ts Time")
+
+        # Convert timestamp to date & time
+        date_val = None
+        time_val = None
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                date_val = dt.date()
+                time_val = dt.strftime("%H:%M")
+            except Exception:
+                pass
+
+        login_time = time_val if "in" in text_status else None
+        logout_time = time_val if "out" in text_status else None
+
+        # Run AI workflow
         results = await workflow.execute_workflow(payload)
 
-        # Insert records into DB
+        # Insert into DB
         with engine.connect() as conn:
-            for record in payload:
-                name = record.get('Employee Name') or record.get('employee') or record.get('name')
-                date = record.get('Date') or record.get('date')
-                login_time = record.get('Log in') or record.get('login')
-                logout_time = record.get('Log out') or record.get('logout')
-                working_hours = record.get('Working hours') or record.get('workingHours')
-
-                conn.execute(
-                    text("""
-                        INSERT INTO employees (name, date, login_time, logout_time, working_hours)
-                        VALUES (:name, :date, :login, :logout, :hours)
-                    """),
-                    {"name": name, "date": date, "login": login_time, "logout": logout_time, "hours": working_hours}
-                )
+            conn.execute(
+                text("""
+                    INSERT INTO employees (name, date, login_time, logout_time, working_hours)
+                    VALUES (:name, :date, :login, :logout, :hours)
+                """),
+                {
+                    "name": name,
+                    "date": date_val,
+                    "login": login_time,
+                    "logout": logout_time,
+                    "hours": None  # can be computed later
+                }
+            )
             conn.commit()
 
-        # Zapier-ready response
         return {
             "status": "success",
             "received": True,
+            "mapped_employee": {
+                "name": name,
+                "date": str(date_val),
+                "login_time": login_time,
+                "logout_time": logout_time
+            },
             "workflow_result": results,
-            "current": results  # <-- Zapier expects this field
+            "current": results
         }
 
     except SQLAlchemyError as db_err:
@@ -98,4 +118,3 @@ async def ingest_chatlio(request: Request):
     except Exception as e:
         print("❌ Error processing request:", str(e))
         return {"status": "error", "message": str(e), "current": None}
-
