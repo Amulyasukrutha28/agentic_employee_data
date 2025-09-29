@@ -29,7 +29,7 @@ workflow = AgentWorkflow()
 # Create employees table
 # ---------------------------
 def create_table():
-    with engine.connect() as conn:
+    with engine.begin() as conn:  # <-- changed from engine.connect() + commit
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS employees (
                 id SERIAL PRIMARY KEY,
@@ -40,7 +40,6 @@ def create_table():
                 working_hours FLOAT
             )
         """))
-        conn.commit()
 
 create_table()
 
@@ -86,7 +85,7 @@ async def ingest_chatlio(request: Request):
         results = await workflow.execute_workflow(payload)
 
         # Save to DB
-        with engine.connect() as conn:
+        with engine.begin() as conn:  # <-- changed from engine.connect() + commit
             conn.execute(
                 text("""
                     INSERT INTO employees (name, date, login_time, logout_time, working_hours)
@@ -100,7 +99,6 @@ async def ingest_chatlio(request: Request):
                     "hours": None  # will be computed later
                 }
             )
-            conn.commit()
 
         return {
             "status": "success",
@@ -122,5 +120,3 @@ async def ingest_chatlio(request: Request):
     except Exception as e:
         print("❌ Error processing request:", str(e))
         return {"status": "error", "message": str(e), "current": None}
-
-@
