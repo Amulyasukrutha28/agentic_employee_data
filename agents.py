@@ -38,6 +38,7 @@ class DataIngestionAgent:
         schema = {'fields': list(records[0].keys()) if records else [], 'record_count': len(records)}
         return {'status': 'completed', 'schema': schema, 'processed_records': len(records), 'data': records}
 
+
 class AnalysisAgent:
     async def process(self, data: List[Dict]) -> Dict[str, Any]:
         working_hours = []
@@ -50,7 +51,8 @@ class AnalysisAgent:
                 'name': record.get('Employee Name', 'Unknown'),
                 'date': record.get('Date', 'Unknown'),
                 'working_hours': hours,
-                'compliant': hours >= 9
+                'compliant': hours >= 9,
+                'deficit': max(0, 9 - hours)
             })
 
         avg_hours = sum(working_hours)/len(working_hours)
@@ -64,6 +66,7 @@ class AnalysisAgent:
             'undertime_count': undertime,
             'timing_records': timing_records
         }
+
 
 class ReasoningAgent:
     async def process(self, data: List[Dict], analysis_result: Dict) -> Dict[str, Any]:
@@ -88,11 +91,17 @@ class ReasoningAgent:
 
         return {'status': 'completed', 'llm_analysis': llm_analysis}
 
+
 class InsightsAgent:
     async def process(self, data: List[Dict], analysis_result: Dict, reasoning_result: Dict) -> Dict[str, Any]:
         under_performers = [r for r in analysis_result['timing_records'] if r['working_hours'] < 9]
         compliance_rate = round(len([r for r in analysis_result['timing_records'] if r['compliant']])/len(data)*100,1)
-        return {'under_performers': under_performers, 'compliance_rate': compliance_rate, 'llm_insights': reasoning_result['llm_analysis']}
+        return {
+            'under_performers': under_performers,
+            'compliance_rate': compliance_rate,
+            'llm_insights': reasoning_result['llm_analysis']
+        }
+
 
 # -------------------- Visualization --------------------
 def create_visualizations(analysis_result: Dict, insights_result: Dict):
@@ -129,52 +138,66 @@ def create_visualizations(analysis_result: Dict, insights_result: Dict):
         plt.savefig("top_underperformers.png")
         plt.close()
 
-# -------------------- Main Function --------------------
+
+# -------------------- Agent Workflow --------------------
+class AgentWorkflow:
+    """Orchestrates all agents for employee timing analysis"""
+    def __init__(self):
+        self.data_agent = DataIngestionAgent()
+        self.analysis_agent = AnalysisAgent()
+        self.reasoning_agent = ReasoningAgent()
+        self.insights_agent = InsightsAgent()
+
+    async def run(self):
+        # Step 1: Fetch data
+        ingestion_result = await self.data_agent.process()
+        data = ingestion_result['data']
+
+        # Step 2: Analysis
+        analysis_result = await self.analysis_agent.process(data)
+
+        # Step 3: Reasoning
+        reasoning_result = await self.reasoning_agent.process(data, analysis_result)
+
+        # Step 4: Insights
+        insights_result = await self.insights_agent.process(data, analysis_result, reasoning_result)
+
+        # Step 5: Visualizations
+        create_visualizations(analysis_result, insights_result)
+
+        # Step 6: Save combined results
+        final_results = {
+            "ingestion": ingestion_result,
+            "analysis": analysis_result,
+            "reasoning": reasoning_result,
+            "insights": insights_result
+        }
+        with open("employee_analysis_results.json", "w") as f:
+            json.dump(final_results, f, indent=2)
+
+        print("✅ Analysis Complete")
+        print("💾 Results saved to 'employee_analysis_results.json'")
+        print("📊 Visualizations saved as PNG files")
+        return final_results
+
+
+# -------------------- Main --------------------
 async def main():
-    print("🚀 Starting Employee Timing Analysis with Visualization\n")
+    print("🚀 Starting Employee Timing Analysis Workflow\n")
+    workflow = AgentWorkflow()
+    results = await workflow.run()
 
-    data_agent = DataIngestionAgent()
-    analysis_agent = AnalysisAgent()
-    reasoning_agent = ReasoningAgent()
-    insights_agent = InsightsAgent()
+    # Optional: print summary
+    analysis = results['analysis']
+    insights = results['insights']
+    print(f"\nTotal Records: {analysis['total_records']}")
+    print(f"Average Working Hours: {analysis['avg_working_hours']:.2f}")
+    print(f"Overtime Cases: {analysis['overtime_count']}")
+    print(f"Undertime Cases: {analysis['undertime_count']}")
+    print(f"Compliance Rate: {insights['compliance_rate']}%")
+    print("\nLLM Insights:\n", insights['llm_insights'])
 
-    # Fetch data
-    ingestion_result = await data_agent.process()
-    data = ingestion_result['data']
-
-    # Analysis
-    analysis_result = await analysis_agent.process(data)
-
-    # Reasoning
-    reasoning_result = await reasoning_agent.process(data, analysis_result)
-
-    # Insights
-    insights_result = await insights_agent.process(data, analysis_result, reasoning_result)
-
-    # Visualizations
-    create_visualizations(analysis_result, insights_result)
-
-    # Print summary
-    print(f"Total Records: {analysis_result['total_records']}")
-    print(f"Average Working Hours: {analysis_result['avg_working_hours']:.2f}")
-    print(f"Overtime Cases: {analysis_result['overtime_count']}")
-    print(f"Undertime Cases: {analysis_result['undertime_count']}")
-    print(f"Compliance Rate: {insights_result['compliance_rate']}%")
-    print("\nLLM Insights:\n", insights_result['llm_insights'])
-
-    # Save JSON
-    final_results = {
-        "ingestion": ingestion_result,
-        "analysis": analysis_result,
-        "reasoning": reasoning_result,
-        "insights": insights_result
-    }
-    with open("employee_analysis_results.json", "w") as f:
-        json.dump(final_results, f, indent=2)
-    print("\n💾 Results saved to 'employee_analysis_results.json'")
-    print("📊 Visualizations saved as PNG files")
 
 # Run
 if __name__ == "__main__":
     asyncio.run(main())
-
