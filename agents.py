@@ -9,7 +9,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Set your OpenAI API key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-proj-...")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
 # -------------------- Agents --------------------
@@ -177,3 +177,4 @@ async def main():
 # Run
 if __name__ == "__main__":
     asyncio.run(main())
+
