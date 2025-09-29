@@ -8,3 +8,4 @@ aiofiles        # For async file handling in FastAPI
 httpx    
 matplotlib
 seaborn
+openai
