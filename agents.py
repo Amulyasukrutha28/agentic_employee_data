@@ -9,25 +9,26 @@ import openai
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Set OpenAI API key
+# -------------------- Config --------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
+DB_CONFIG = {
+    "dbname": os.getenv("DB_NAME", "postgres"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASS", "password"),
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": int(os.getenv("DB_PORT", 5432)),
+}
+
 # -------------------- Agents --------------------
 class DataIngestionAgent:
-    async def process(self, data: List[Dict] = None) -> Dict[str, Any]:
-        """Fetch data from PostgreSQL database"""
+    async def process(self) -> Dict[str, Any]:
+        """Fetch data from PostgreSQL employees table"""
         try:
-            conn = psycopg2.connect(
-                dbname="employee_login",
-                user="employee_login_user",
-                password="8FYvZbwfP2Bw69GzxX8RRw0sKi7BDpxc",
-                host="dpg-d3b77nmmcj7s73em7lhg-a.oregon-postgres.render.com",
-                port=5432,
-                cursor_factory=RealDictCursor
-            )
+            conn = psycopg2.connect(cursor_factory=RealDictCursor, **DB_CONFIG)
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM employee_timing;")
+            cursor.execute("SELECT * FROM employees;")
             records = cursor.fetchall()
             conn.close()
         except Exception as e:
@@ -42,9 +43,9 @@ class DataIngestionAgent:
                 login = rec.get("login_time")
                 logout = rec.get("logout_time")
                 if login and logout:
-                    fmt = "%H:%M"
-                    t_in = datetime.strptime(login, fmt)
-                    t_out = datetime.strptime(logout, fmt)
+                    fmt = "%H:%M:%S"
+                    t_in = datetime.strptime(str(login), fmt)
+                    t_out = datetime.strptime(str(logout), fmt)
                     rec["Working hours"] = round((t_out - t_in).total_seconds()/3600, 2)
                 else:
                     rec["Working hours"] = 0
@@ -53,6 +54,7 @@ class DataIngestionAgent:
 
         schema = {'fields': list(records[0].keys()), 'record_count': len(records)}
         return {'status': 'completed', 'schema': schema, 'processed_records': len(records), 'data': records}
+
 
 class AnalysisAgent:
     async def process(self, data: List[Dict]) -> Dict[str, Any]:
@@ -63,8 +65,8 @@ class AnalysisAgent:
             hours = float(record.get('Working hours', 0))
             working_hours.append(hours)
             timing_records.append({
-                'name': record.get('Employee Name', 'Unknown'),
-                'date': record.get('Date', 'Unknown'),
+                'name': record.get('name', 'Unknown'),
+                'date': str(record.get('date')),
                 'working_hours': hours,
                 'compliant': hours >= 9,
                 'deficit': max(0, 9 - hours)
@@ -81,6 +83,7 @@ class AnalysisAgent:
             'undertime_count': undertime,
             'timing_records': timing_records
         }
+
 
 class ReasoningAgent:
     async def process(self, data: List[Dict], analysis_result: Dict) -> Dict[str, Any]:
@@ -105,6 +108,7 @@ class ReasoningAgent:
 
         return {'status': 'completed', 'llm_analysis': llm_analysis}
 
+
 class InsightsAgent:
     async def process(self, data: List[Dict], analysis_result: Dict, reasoning_result: Dict) -> Dict[str, Any]:
         under_performers = [r for r in analysis_result['timing_records'] if r['working_hours'] < 9]
@@ -122,23 +126,23 @@ def create_visualizations(analysis_result: Dict, insights_result: Dict):
     compliant = sum([1 for r in analysis_result['timing_records'] if r['compliant']])
     non_compliant = len(hours) - compliant
 
-    # Histogram of working hours
+    # Histogram
     plt.figure(figsize=(8,5))
     sns.histplot(hours, bins=10, kde=True, color='skyblue')
     plt.title("Distribution of Working Hours")
     plt.xlabel("Hours")
-    plt.ylabel("Number of Employees")
+    plt.ylabel("Employees")
     plt.savefig(f"working_hours_{date_str}.png")
     plt.close()
 
-    # Pie chart: compliance
+    # Pie chart
     plt.figure(figsize=(6,6))
     plt.pie([compliant, non_compliant], labels=["Compliant","Non-Compliant"], autopct='%1.1f%%', colors=['green','red'])
     plt.title("Compliance Rate")
     plt.savefig(f"compliance_pie_{date_str}.png")
     plt.close()
 
-    # Bar chart: top under-performers
+    # Top underperformers
     under = sorted(insights_result['under_performers'], key=lambda x: x['deficit'], reverse=True)[:10]
     if under:
         plt.figure(figsize=(8,5))
@@ -153,7 +157,6 @@ def create_visualizations(analysis_result: Dict, insights_result: Dict):
 
 # -------------------- Agent Workflow --------------------
 class AgentWorkflow:
-    """Orchestrates all agents for employee timing analysis"""
     def __init__(self):
         self.data_agent = DataIngestionAgent()
         self.analysis_agent = AnalysisAgent()
@@ -161,23 +164,15 @@ class AgentWorkflow:
         self.insights_agent = InsightsAgent()
 
     async def execute_workflow(self):
-        # Step 1: Fetch data
         ingestion_result = await self.data_agent.process()
         data = ingestion_result['data']
 
-        # Step 2: Analysis
         analysis_result = await self.analysis_agent.process(data)
-
-        # Step 3: Reasoning
         reasoning_result = await self.reasoning_agent.process(data, analysis_result)
-
-        # Step 4: Insights
         insights_result = await self.insights_agent.process(data, analysis_result, reasoning_result)
 
-        # Step 5: Visualizations
         create_visualizations(analysis_result, insights_result)
 
-        # Step 6: Save combined results
         date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         final_results_file = f"employee_analysis_results_{date_str}.json"
         final_results = {
@@ -189,6 +184,5 @@ class AgentWorkflow:
         with open(final_results_file, "w") as f:
             json.dump(final_results, f, indent=2)
 
-        print("✅ Analysis Complete")
-        print(f"💾 Results saved to '{final_results_file}'")
+        print(f"✅ Analysis Complete → Saved '{final_results_file}'")
         return final_results
