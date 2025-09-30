@@ -163,16 +163,35 @@ class AgentWorkflow:
         self.reasoning_agent = ReasoningAgent()
         self.insights_agent = InsightsAgent()
 
-    async def execute_workflow(self):
-        ingestion_result = await self.data_agent.process()
-        data = ingestion_result['data']
+    async def execute_workflow(self, payload=None):
+        """
+        Optionally accept a payload from Zapier/Slack.
+        If payload is None, fallback to fetching from DB.
+        """
+        if payload:
+            # Use the payload as a single-record dataset
+            data = [{
+                "name": payload.get("user", {}).get("real_name") or "Unknown",
+                "date": payload.get("ts_time", None),
+                "login_time": payload.get("login_time", None),
+                "logout_time": payload.get("logout_time", None),
+                "working_hours": None
+            }]
+            ingestion_result = {"status": "completed", "data": data, "processed_records": 1, "schema": {"fields": list(data[0].keys()), "record_count":1}}
+        else:
+            # Default: fetch all data from DB
+            ingestion_result = await self.data_agent.process()
+            data = ingestion_result['data']
 
+        # Analysis → Reasoning → Insights
         analysis_result = await self.analysis_agent.process(data)
         reasoning_result = await self.reasoning_agent.process(data, analysis_result)
         insights_result = await self.insights_agent.process(data, analysis_result, reasoning_result)
 
+        # Visualizations
         create_visualizations(analysis_result, insights_result)
 
+        # Save final results JSON
         date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         final_results_file = f"employee_analysis_results_{date_str}.json"
         final_results = {
